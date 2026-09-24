@@ -15,7 +15,7 @@
  */
 
 import * as http from 'http';
-import { randomUUID } from 'crypto';
+import { randomUUID, timingSafeEqual } from 'crypto';
 import type Database from '@ansvar/mcp-sqlite';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
@@ -87,8 +87,26 @@ function evictIdleSessions(): void {
 function setCorsHeaders(res: http.ServerResponse): void {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, mcp-session-id');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, mcp-session-id');
   res.setHeader('Access-Control-Expose-Headers', 'mcp-session-id');
+}
+
+// ---------------------------------------------------------------------------
+// Authentication (Bearer token from MCP_API_KEY)
+// ---------------------------------------------------------------------------
+
+function isAuthorized(req: http.IncomingMessage): boolean {
+  const expectedToken = process.env.MCP_API_KEY;
+  if (!expectedToken) return false; // fail closed when no key is configured
+
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) return false;
+
+  const expected = Buffer.from(expectedToken);
+  const received = Buffer.from(authHeader.slice(7));
+  if (expected.length !== received.length) return false;
+
+  return timingSafeEqual(expected, received);
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +136,16 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   if (method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // Protect the MCP endpoint with a Bearer token
+  if (url.pathname === '/mcp' && !isAuthorized(req)) {
+    res.writeHead(401, {
+      'Content-Type': 'application/json',
+      'WWW-Authenticate': 'Bearer',
+    });
+    res.end(JSON.stringify({ error: 'Unauthorized' }));
     return;
   }
 
